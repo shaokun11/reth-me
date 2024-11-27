@@ -293,7 +293,7 @@ pub trait Trace: LoadState<Evm: ConfigureEvm<Header = Header>> {
         async move {
             let block = async {
                 if block.is_some() {
-                    return Ok(block)
+                    return Ok(block);
                 }
                 self.block_with_senders(block_id).await
             };
@@ -305,7 +305,7 @@ pub trait Trace: LoadState<Evm: ConfigureEvm<Header = Header>> {
 
             if block.body.transactions.is_empty() {
                 // nothing to trace
-                return Ok(Some(Vec::new()))
+                return Ok(Some(Vec::new()));
             }
 
             // replay all transactions of the block
@@ -350,6 +350,139 @@ pub trait Trace: LoadState<Evm: ConfigureEvm<Header = Header>> {
                         (tx_info, tx_env)
                     })
                     .peekable();
+
+                while let Some((tx_info, tx)) = transactions.next() {
+                    let env =
+                        EnvWithHandlerCfg::new_with_cfg_env(cfg.clone(), block_env.clone(), tx);
+
+                    let mut inspector = inspector_setup();
+                    let (res, _) =
+                        this.inspect(StateCacheDbRefMutWrapper(&mut db), env, &mut inspector)?;
+                    let ResultAndState { result, state } = res;
+                    results.push(f(tx_info, inspector, result, &state, &db)?);
+
+                    // need to apply the state changes of this transaction before executing the
+                    // next transaction, but only if there's a next transaction
+                    if transactions.peek().is_some() {
+                        // commit the state changes to the DB
+                        db.commit(state)
+                    }
+                }
+
+                Ok(Some(results))
+            })
+            .await
+        }
+    }
+
+    /// Executes all transactions of a block and returns a list of callback results invoked for each
+    fn trace_blocks_until_with_inspector<Setup, Insp, F, R>(
+        &self,
+        block_id: BlockId,
+        block: Option<Arc<SealedBlockWithSenders>>,
+        block_count: u64,
+        mut inspector_setup: Setup,
+        f: F,
+    ) -> impl Future<Output = Result<Option<Vec<R>>, Self::Error>> + Send
+    where
+        Self: LoadBlock,
+        F: Fn(
+                TransactionInfo,
+                Insp,
+                ExecutionResult,
+                &EvmState,
+                &StateCacheDb<'_>,
+            ) -> Result<R, Self::Error>
+            + Send
+            + 'static,
+        Setup: FnMut() -> Insp + Send + 'static,
+        Insp: for<'a, 'b> Inspector<StateCacheDbRefMutWrapper<'a, 'b>> + Send + 'static,
+        R: Send + 'static,
+    {
+        async move {
+            let block = async {
+                if block.is_some() {
+                    return Ok(block);
+                }
+                self.block_with_senders(block_id).await
+            };
+            let mut more_blocks = Vec::new();
+            for i in 0..block_count {
+                let block_id = BlockId::Number(alloy_eips::BlockNumberOrTag::Number(
+                    block_id.as_u64().unwrap() + i,
+                ));
+                let b = self.block_with_senders(block_id).await;
+                b.unwrap()
+                    .map(|b| {
+                        more_blocks.push(b);
+                    })
+                    .unwrap();
+            }
+
+            let ((cfg, block_env, _), block) =
+                futures::try_join!(self.evm_env_at(block_id), block)?;
+
+            let Some(block) = block else { return Ok(None) };
+
+            if block.body.transactions.is_empty() {
+                // nothing to trace
+                return Ok(Some(Vec::new()));
+            }
+
+            // replay all transactions of the block
+            self.spawn_tracing(move |this| {
+                // we need to get the state of the parent block because we're replaying this block
+                // on top of its parent block's state
+                let state_at = block.parent_hash;
+                let block_hash = block.hash();
+
+                let block_number = block_env.number.saturating_to::<u64>();
+                let base_fee = block_env.basefee.saturating_to::<u128>();
+
+                // now get the state
+                let state = this.state_at_block_id(state_at.into())?;
+                let mut db =
+                    CacheDB::new(StateProviderDatabase::new(StateProviderTraitObjWrapper(&state)));
+
+                this.apply_pre_execution_changes(&block, &mut db, &cfg, &block_env)?;
+
+                let mut results = Vec::new();
+
+                let mut transactions = block
+                    .transactions_with_sender()
+                    .enumerate()
+                    .map(|(idx, (signer, tx))| {
+                        let tx_info = TransactionInfo {
+                            hash: Some(tx.hash()),
+                            index: Some(idx as u64),
+                            block_hash: Some(block_hash),
+                            block_number: Some(block_number),
+                            base_fee: Some(base_fee),
+                        };
+                        let tx_env = this.evm_config().tx_env(tx, *signer);
+                        (tx_info, tx_env)
+                    })
+                    .collect::<Vec<_>>();
+                more_blocks.into_iter().for_each(|b| {
+                    transactions.extend(
+                        b.transactions_with_sender()
+                            .enumerate()
+                            .map(|(idx, (signer, tx))| {
+                                let tx_info = TransactionInfo {
+                                    hash: Some(tx.hash()),
+                                    index: Some(idx as u64),
+                                    block_hash: Some(block_hash),
+                                    block_number: Some(block_number),
+                                    base_fee: Some(base_fee),
+                                };
+                                let tx_env = this.evm_config().tx_env(tx, *signer);
+                                (tx_info, tx_env)
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                });
+
+                let mut transactions = transactions.into_iter().peekable();
 
                 while let Some((tx_info, tx)) = transactions.next() {
                     let env =

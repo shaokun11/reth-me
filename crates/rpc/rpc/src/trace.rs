@@ -224,7 +224,7 @@ where
     ) -> Result<Option<LocalizedTransactionTrace>, Eth::Error> {
         if indices.len() != 1 {
             // The OG impl failed if it gets more than a single index
-            return Ok(None)
+            return Ok(None);
         }
         self.trace_get_index(hash, indices[0]).await
     }
@@ -262,7 +262,7 @@ where
             return Err(EthApiError::InvalidParams(
                 "invalid parameters: fromBlock cannot be greater than toBlock".to_string(),
             )
-            .into())
+            .into());
         }
 
         // ensure that the range is not too large, since we need to fetch all blocks in the range
@@ -271,7 +271,7 @@ where
             return Err(EthApiError::InvalidParams(
                 "Block range too large; currently limited to 100 blocks".to_string(),
             )
-            .into())
+            .into());
         }
 
         // fetch all blocks in that range
@@ -324,7 +324,7 @@ where
             } else {
                 // no block reward, means we're past the Paris hardfork and don't expect any rewards
                 // because the blocks in ascending order
-                break
+                break;
             }
         }
 
@@ -335,7 +335,7 @@ where
             if after < all_traces.len() {
                 all_traces.drain(..after);
             } else {
-                return Ok(vec![])
+                return Ok(vec![]);
             }
         }
 
@@ -435,6 +435,41 @@ where
             .await
     }
 
+    /// Replays all transactions in many block
+    pub async fn replay_blocks_transactions(
+        &self,
+        block_id: BlockId,
+        block_count: u64,
+        trace_types: HashSet<TraceType>,
+    ) -> Result<Option<Vec<TraceResultsWithTransactionHash>>, Eth::Error> {
+        let config = TracingInspectorConfig::from_parity_config(&trace_types);
+        self.eth_api()
+            .trace_blocks_until_with_inspector(
+                block_id,
+                None,
+                block_count,
+                move || TracingInspector::new(config),
+                move |tx_info, inspector, res, state, db| {
+                    let mut full_trace =
+                        inspector.into_parity_builder().into_trace_results(&res, &trace_types);
+
+                    // If statediffs were requested, populate them with the account balance and
+                    // nonce from pre-state
+                    if let Some(ref mut state_diff) = full_trace.state_diff {
+                        populate_state_diff(state_diff, db, state.iter())
+                            .map_err(Eth::Error::from_eth_err)?;
+                    }
+
+                    let trace = TraceResultsWithTransactionHash {
+                        transaction_hash: tx_info.hash.expect("tx hash is set"),
+                        full_trace,
+                    };
+                    Ok(trace)
+                },
+            )
+            .await
+    }
+
     /// Returns all opcodes with their count and combined gas usage for the given transaction in no
     /// particular order.
     pub async fn trace_transaction_opcode_gas(
@@ -483,7 +518,7 @@ where
         let Some(transactions) = res else { return Ok(None) };
 
         let Some(block) = self.eth_api().block_with_senders(block_id).await? else {
-            return Ok(None)
+            return Ok(None);
         };
 
         Ok(Some(BlockOpcodeGas {
@@ -620,6 +655,19 @@ where
     ) -> RpcResult<Option<Vec<TraceResultsWithTransactionHash>>> {
         let _permit = self.acquire_trace_permit().await;
         Ok(Self::replay_block_transactions(self, block_id, trace_types)
+            .await
+            .map_err(Into::into)?)
+    }
+
+    /// Handler for `trace_replayBlocksTransactions`
+    async fn replay_blocks_transactions(
+        &self,
+        block_id: BlockId,
+        block_count: u64,
+        trace_types: HashSet<TraceType>,
+    ) -> RpcResult<Option<Vec<TraceResultsWithTransactionHash>>> {
+        let _permit = self.acquire_trace_permit().await;
+        Ok(Self::replay_blocks_transactions(self, block_id, block_count, trace_types)
             .await
             .map_err(Into::into)?)
     }

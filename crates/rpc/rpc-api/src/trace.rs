@@ -54,6 +54,15 @@ pub trait TraceApi {
         trace_types: HashSet<TraceType>,
     ) -> RpcResult<Option<Vec<TraceResultsWithTransactionHash>>>;
 
+      /// Replays all transactions in many block returning the requested traces for each transaction.
+      #[method(name = "replayBlocksTransactions")]
+      async fn replay_blocks_transactions(
+          &self,
+          block_id: BlockId,
+          block_count: u64,
+          trace_types: HashSet<TraceType>,
+        ) -> RpcResult<Option<Vec<TraceResultsWithTransactionHash>>>;
+
     /// Replays a transaction, returning the traces.
     #[method(name = "replayTransaction")]
     async fn replay_transaction(
