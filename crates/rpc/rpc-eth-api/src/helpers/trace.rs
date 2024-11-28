@@ -464,6 +464,8 @@ pub trait Trace: LoadState<Evm: ConfigureEvm<Header = Header>> {
                     })
                     .collect::<Vec<_>>();
                 more_blocks.into_iter().for_each(|b| {
+                    let b_hash = b.hash();
+                    let b_num = b.header().number;
                     transactions.extend(
                         b.transactions_with_sender()
                             .enumerate()
@@ -471,8 +473,8 @@ pub trait Trace: LoadState<Evm: ConfigureEvm<Header = Header>> {
                                 let tx_info = TransactionInfo {
                                     hash: Some(tx.hash()),
                                     index: Some(idx as u64),
-                                    block_hash: Some(block_hash),
-                                    block_number: Some(block_number),
+                                    block_hash: Some(b_hash),
+                                    block_number: Some(b_num),
                                     base_fee: Some(base_fee),
                                 };
                                 let tx_env = this.evm_config().tx_env(tx, *signer);
@@ -485,7 +487,7 @@ pub trait Trace: LoadState<Evm: ConfigureEvm<Header = Header>> {
                 let mut transactions = transactions.into_iter().peekable();
 
                 while let Some((tx_info, tx)) = transactions.next() {
-                    let env =
+                    let env: EnvWithHandlerCfg =
                         EnvWithHandlerCfg::new_with_cfg_env(cfg.clone(), block_env.clone(), tx);
 
                     let mut inspector = inspector_setup();
