@@ -2095,6 +2095,60 @@ impl<T: PoolTransaction> AllTransactions<T> {
 
         Ok(InsertOk { transaction, move_to: state.into(), state, replaced_tx, updates })
     }
+    ///
+    /// This calls the normal `insert_tx` to perform validation and insertion/replacement logic,
+    /// then forcibly sets the inserted transaction's state/subpool bits so it is treated as
+    /// pending (ready for inclusion). Use only when you are certain the transaction is actually
+    /// valid and fits the expected on-chain order — this bypasses some of the pool's normal guards.
+    pub(crate) fn insert_tx_force_pending(
+        &mut self,
+        transaction: ValidPoolTransaction<T>,
+        on_chain_balance: U256,
+        on_chain_nonce: u64,
+    ) -> InsertResult<T> {
+        // First, insert normally to leverage existing validation, replacement and indexing.
+        // Reuse insert_tx so we don't duplicate its logic.
+        let mut insert_result = match self.insert_tx(transaction, on_chain_balance, on_chain_nonce) {
+            Ok(ok) => ok,
+            Err(e) => return Err(e),
+        };
+
+        // Get the id of the transaction we just inserted (owned by insert_result.transaction).
+        let inserted_tx_id = *insert_result.transaction.id();
+
+        // Now FORCE the corresponding entry in self.txs to be pending.
+        // We have to update the pool internal entry's state and subpool.
+        if let Some(pool_entry) = self.txs.get_mut(&inserted_tx_id) {
+            // Set state bits that typically indicate a pending tx.
+            pool_entry.state.insert(TxState::NO_NONCE_GAPS);
+            pool_entry.state.insert(TxState::NO_PARKED_ANCESTORS);
+            pool_entry.state.insert(TxState::ENOUGH_BALANCE);
+            pool_entry.state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
+            pool_entry.state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+
+            // Force subpool to Pending
+            pool_entry.subpool = pool_entry.state.into(); // should be SubPool::Pending given above bits
+        } else {
+            // Defensive: this should not happen because insert_tx inserted it.
+            // But if it does, just return the original insert_result.
+            return Ok(insert_result);
+        }
+
+        // Also update the returned InsertOk structure so callers see the tx as pending.
+        insert_result.state.insert(TxState::NO_NONCE_GAPS);
+        insert_result.state.insert(TxState::NO_PARKED_ANCESTORS);
+        insert_result.state.insert(TxState::ENOUGH_BALANCE);
+        insert_result.state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
+        insert_result.state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+        insert_result.move_to = insert_result.state.into();
+
+        // Optional: if you maintain additional per-sender quick indices (like independent_transactions,
+        // highest_nonces, etc.), you may need to update them here so the pool's view is consistent.
+        // Example (uncomment / adapt if such helper exists):
+        // self.update_independents_and_highest_nonces_for_id(&inserted_tx_id);
+
+        Ok(insert_result)
+    }  
 
     /// Number of transactions in the entire pool
     pub(crate) fn len(&self) -> usize {

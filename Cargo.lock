@@ -8360,6 +8360,8 @@ dependencies = [
  "reth-storage-api",
  "reth-transaction-pool",
  "revm",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

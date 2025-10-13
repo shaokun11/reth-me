@@ -162,6 +162,19 @@ impl<T: TransactionOrdering> PendingPool<T> {
     pub(crate) fn all(
         &self,
     ) -> impl ExactSizeIterator<Item = Arc<ValidPoolTransaction<T::Transaction>>> + '_ {
+        //    let mut v: Vec<(u64, Arc<ValidPoolTransaction<T::Transaction>>)> = self
+        //     .by_id
+        //     .values()
+        //     .map(|pt| (pt.submission_id, pt.transaction.clone()))
+        //     .collect();
+
+        // v.sort_by_key(|(s, _)| *s);
+        // let txs: Vec<Arc<ValidPoolTransaction<T::Transaction>>> = v
+        //     .into_iter()
+        //     .map(|(_, tx)| tx)
+        //     .collect();
+
+        // txs.into_iter()
         self.by_id.values().map(|tx| tx.transaction.clone())
     }
 

@@ -41,3 +41,7 @@ alloy-primitives.workspace = true
 
 # misc
 tracing.workspace = true
+
+
+serde_json.workspace = true 
+serde.workspace = true 
